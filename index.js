@@ -691,6 +691,7 @@ module.exports = class Autobee extends ReadyResource {
 
   async compactMaybe() {
     if (await this._isReindexed()) return
+    if (!(await this._reindexHeldWhole())) return
 
     const latest = await this.writers.getLatestLocalOplog()
     const views = latest ? latest.views : null
@@ -705,6 +706,23 @@ module.exports = class Autobee extends ReadyResource {
     await this.system.reset()
 
     this._reindexed = true
+  }
+
+  // as a conservative fast-forward: the reindex reads every block it copies, and a block
+  // nobody connected can serve would park the drain - and every append behind it - for good
+  async _reindexHeldWhole() {
+    for (const bee of [this._workingBee, this.system.bee]) {
+      const ctx = bee.context
+      for (let i = 0; i <= ctx.cores.length; i++) {
+        const core = ctx.getCore(i)
+        await core.ready()
+        if (core.contiguousLength >= core.length) continue
+        // per connected peer: the core-level hint remembers peers long gone
+        if (core.peers.some((peer) => peer.remoteContiguousLength >= core.length)) continue
+        return false
+      }
+    }
+    return true
   }
 
   async _isReindexed() {
